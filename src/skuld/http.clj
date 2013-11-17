@@ -77,29 +77,29 @@
   [node]
   (fn [req]
     (condp route-matches req
-      "/queue/count"        (GET req (node/count-queue node {}))
-
-      ;; TODO: Make sure we return something meaningful to the client
-      "/tasks/claim/:id"    :>> (fn [{:keys [id]}]
-                                  (let [msg {:id (b64->id id)}
-                                        ret (node/claim! node msg)
-                                        cnt (-> ret :task :claims count dec)]
-                                    (GET req {:claim-id cnt})))
+      "/queue/count"        (let [w (-> req :query-params :w (parse-int 1))]
+                              (GET req (node/count-queue node {:w w})))
+      "/tasks/claim"        (let [dt (-> req :query-params :dt (parse-int 10000))
+                                  ret (node/claim! node {:dt dt})]
+                              (GET req (dissoc ret :request-id)))
       "/tasks/complete/:id" :>> (fn [{:keys [id]}]
                                   (let [id  (b64->id id)
-                                        idx (-> req :query-params :idx)
-                                        msg {:task-id  id
-                                             :claim-id (parse-int idx)}
+                                        cid (-> req :query-params :cid)
+                                        msg {:task-id id
+                                             :claim-id (parse-int cid)}
                                         ret (node/complete! node msg)]
                                     (GET req (dissoc ret :responses))))
-      "/tasks/count"        (GET req (node/count-tasks node {}))
+      "/tasks/count"        (let [w (-> req :query-params :w (parse-int 1))]
+                              (GET req (node/count-tasks node {:w w})))
 
       ;; TODO: The `/tasks/enqueue` endpoint is pretty messy currently
       "/tasks/enqueue"      (if-let [;; Explicitly suck out the task key to
                                      ;; avoid passing bad params to
                                      ;; `node/enqueue!`
                                      task (-> req :body :task)]
-                              (try (let [ret (node/enqueue! node {:task task})]
+                              (try (let [w   (-> req :body :w (parse-int 1))
+                                         msg {:task task :w w}
+                                         ret (node/enqueue! node msg)]
                                      (POST req (dissoc ret :responses)))
                                 ;; Handle vnode assertion; return an error to
                                 ;; the client
@@ -112,7 +112,8 @@
       "/tasks/list"         (GET req (node/list-tasks node {}))
       "/tasks/:id"          :>> (fn [{:keys [id]}]
                                   (let [r (-> req :query-params :r)
-                                        msg {:id (b64->id id) :r (parse-int r)}
+                                        msg {:id (b64->id id)
+                                             :r (parse-int r 1)}
                                         ret (node/get-task node msg)]
                                     (if-not (-> ret :task :id)
                                       (GET req

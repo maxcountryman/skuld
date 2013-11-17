@@ -192,7 +192,7 @@
   ; Enqueue a few tasks
   (let [n 10]
     (dotimes [i n]
-      (client/enqueue! *client* {:w 3} {:data "sup"}))
+      (client/enqueue! *client* {:w 3} {:data "hi there"}))
 
     (is (= n (client/count-tasks *client*)))
 
@@ -203,9 +203,12 @@
 
   (let [n 10]
     (dotimes [i n]
-      (client/enqueue! *client* {:w 3} {:data "sup"}))
+      (http/post "http://127.0.0.1:13100/tasks/enqueue"
+                 {:form-params {:task {:data "sup"} :w 3}
+                  :content-type :json
+                  :as :json}))
 
-    (let [resp (http/get "http://127.0.0.1:13100/tasks/count" {:as :json})
+    (let [resp (http/get "http://127.0.0.1:13100/tasks/count?w=3" {:as :json})
           content-type (get-in resp [:headers "content-type"])]
       (is (= 200 (:status resp)))
       (is (= "application/json;charset=utf-8" content-type))
@@ -214,13 +217,11 @@
                           {:throw-exceptions false})]
       (is (= 405 (:status resp))))
 
-    (let [resp (http/get "http://127.0.0.1:13100/queue/count" {:as :json})
+    (let [resp (http/get "http://127.0.0.1:13100/queue/count?w=3" {:as :json})
           content-type (get-in resp [:headers "content-type"])]
       (is (= 200 (:status resp)))
       (is (= "application/json;charset=utf-8" content-type))
-      ;; HACK: somehow the queue-count value is doubling--could this be from
-      ;; the `count-test`? Something else?
-      (is (= (* 2 n) (-> resp :body :count))))
+      (is (= n (-> resp :body :count))))
     (let [resp (http/post "http://127.0.0.1:13100/queue/count"
                           {:throw-exceptions false})]
       (is (= 405 (:status resp))))))
@@ -229,8 +230,11 @@
   ; Enqueue
   (let [n 10]
     (dotimes [i n]
-      (client/enqueue! *client* {:w 3} {:data "sup"}))
-   
+      (http/post "http://127.0.0.1:13100/tasks/enqueue"
+                 {:form-params {:task {:data "sup"} :w 3}
+                  :content-type :json
+                  :as :json}))
+
     ; List
     (let [tasks (client/list-tasks *client*)]
       (is (= n (count tasks)))
@@ -257,11 +261,12 @@
 
 (deftest get-task-http-test
   (let [id (http/post "http://127.0.0.1:13100/tasks/enqueue"
-                        {:form-params {:task {:data "sup"} :w 3}
-                         :content-type :json
-                         :as :json})
+                      {:form-params {:task {:data "sup"} :w 3}
+                       :content-type :json
+                       :as :json})
         id (-> id :body :id)]
-    (let [resp (http/get (str "http://127.0.0.1:13100/tasks/" id) {:as :json})
+    (let [resp (http/get (str "http://127.0.0.1:13100/tasks/" id "?r=3")
+                         {:as :json})
           content-type (get-in resp [:headers "content-type"])
           data (-> resp :body :task :data)]
       (is (= 200 (:status resp)))
@@ -284,7 +289,8 @@
     (is (not (nil? id)))
 
     ;; Ensure we can retrieve the task
-    (let [resp* (http/get (str "http://127.0.0.1:13100/tasks/" id) {:as :json})
+    (let [resp* (http/get (str "http://127.0.0.1:13100/tasks/" id "?r=3")
+                          {:as :json})
           data (-> resp* :body :task :data)]
       (is (= data "sup")))
 
@@ -292,29 +298,18 @@
                          {:throw-exceptions false})]
       (is (= 405 (:status resp))))))
 
-;; TODO: Actually test the vote request happened
-(deftest request-vote-http-test
-  (let [part (-> *nodes* first :vnodes deref first second :partition)
-        resp (http/post "http://127.0.0.1:13100/request-vote"
-                        {:form-params {:partition part}
-                         :content-type :json
-                         :as :json})
-        content-type (get-in resp [:headers "content-type"])]
-    (is (= 200 (:status resp)))
-    (is (= "application/json;charset=utf-8" content-type))))
-
 (deftest wipe-http-test
   (http/post "http://127.0.0.1:13100/tasks/enqueue"
              {:form-params {:task {:data "foo2"} :w 3}
               :content-type :json})
 
-  (let [resp (http/get "http://127.0.0.1:13100/tasks/count" {:as :json})
+  (let [resp (http/get "http://127.0.0.1:13100/tasks/count?w=3" {:as :json})
         n (-> resp :body :count)]
     (is (= n 1)))
 
   (let [resp (http/get "http://127.0.0.1:13100/wipe")
         content-type (get-in resp [:headers "content-type"])
-        resp* (http/get "http://127.0.0.1:13100/tasks/count" {:as :json})
+        resp* (http/get "http://127.0.0.1:13100/tasks/count?w=3" {:as :json})
         n (-> resp* :body :count)]
     (is (= 200 (:status resp)))
     (is (= "application/json;charset=utf-8" content-type))
@@ -329,20 +324,23 @@
                          :content-type :json
                          :as :json})
         id (-> resp :body :id)
-        resp* (http/get (str "http://127.0.0.1:13100/tasks/" id) {:as :json})
+        resp* (http/get (str "http://127.0.0.1:13100/tasks/" id "?r=3")
+                        {:as :json})
         claims (-> resp* :body :task :claims)]
     (is (= claims []))
 
-    ;; Now let's claim the task
-    (let [resp (http/get (str "http://127.0.0.1:13100/tasks/claim/" id)
+    ;; Now let's claim a task, i.e. the task we just enqueued
+    (let [resp (http/get "http://127.0.0.1:13100/tasks/claim?dt=300000"
                          {:as :json})
           content-type (get-in resp [:headers "content-type"])
-          claim-id (-> resp :body :claim-id)
-          resp* (http/get (str "http://127.0.0.1:13100/tasks/" id) {:as :json})
+          _ (prn "claim" resp)
+          id* (-> resp :body :task :id)
+          resp* (http/get (str "http://127.0.0.1:13100/tasks/" id "?r=3")
+                          {:as :json})
           claims (-> resp* :body :task :claims)]
       (is (= 200 (:status resp)))
       (is (= "application/json;charset=utf-8" content-type))
-      (is (= claim-id 0))
+      (is (= id id*))
       (is (not= claims [])))))
 
 (deftest complete-http-test
@@ -354,29 +352,35 @@
                          :content-type :json
                          :as :json})
         id (-> resp :body :id)
-        resp* (http/get (str "http://127.0.0.1:13100/tasks/" id) {:as :json})
-        data (-> resp* :body :task :data)]
-    (is (= data "sup"))
+        resp* (http/get (str "http://127.0.0.1:13100/tasks/" id "?r=3")
+                        {:as :json})
+        claims (-> resp* :body :task :claims)]
+    (is (= claims []))
 
-    ;; Now let's claim the task
-    (let [resp (http/get (str "http://127.0.0.1:13100/tasks/claim/" id)
+    ;; Now let's claim a task, i.e. the task we just enqueued
+    (let [resp (http/get "http://127.0.0.1:13100/tasks/claim?dt=300000"
                          {:as :json})
-          claim-id (-> resp :body :claim-id)
-          resp* (http/get (str "http://127.0.0.1:13100/tasks/" id) {:as :json})
-          claims (-> resp* :body :task :claims)]
-      (is (= claim-id 0))
+          content-type (get-in resp [:headers "content-type"])
+          id* (-> resp :body :task :id)
+          resp* (http/get (str "http://127.0.0.1:13100/tasks/" id "?r=3")
+                          {:as :json})
+          claims (-> resp* :body :task :claims)
+          cid 0]
+      (is (= 200 (:status resp)))
+      (is (= "application/json;charset=utf-8" content-type))
+      (is (= id id*))
       (is (not= claims []))
 
       ;; Finally let's complete it
       (let [uri (str "http://127.0.0.1:13100/tasks/complete/"
                      id
-                     "?idx="
-                     claim-id)
+                     "?cid="
+                     cid)
             resp (http/get uri {:as :json})
             content-type (get-in resp [:headers "content-type"])
             resp* (http/get (str "http://127.0.0.1:13100/tasks/" id)
                             {:as :json})
-            completed (-> resp* :body :task :claims (get claim-id) :completed)]
+            completed (-> resp* :body :task :claims (nth cid) :completed)]
         (is (= 200 (:status resp)))
         (is (= "application/json;charset=utf-8" content-type))
         (is (not (nil? completed)))))))
